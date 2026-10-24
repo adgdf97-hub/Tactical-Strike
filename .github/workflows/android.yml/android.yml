@@ -1,0 +1,37 @@
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/android.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Get CS16Client source
+        run: git clone --recursive https://github.com/Velaron/cs16-client.git source
+
+      - name: Build APK
+        working-directory: source/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tactical-Strike-APK-test
+          path: source/android/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
