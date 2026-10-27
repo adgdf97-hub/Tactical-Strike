@@ -38,16 +38,14 @@ jobs:
       - name: Locate and embed the 32-bit client library
         run: |
           set -euxo pipefail
-          echo "Searching for native client libraries..."
-          find client/android/app -type f \( -name 'libclient.so' -o -name 'client.so' \) -print
-          CLIENT_LIB="$(find client/android/app -type f -path '*/armeabi-v7a/*' -name 'libclient.so' -print -quit)"
+          echo "Searching for the 32-bit ARM client library..."
+          CLIENT_LIB="$(find client/android/app/build/intermediates -type f -path '*/lib/armeabi-v7a/libclient_android_armv7l.so' -print -quit)"
           if [ -z "$CLIENT_LIB" ]; then
-            echo "::error::No armeabi-v7a/libclient.so was produced. Native outputs:"
-            find client/android/app -type f -name '*.so' -print || true
-            echo "CMake build directories:"
-            find client/android/app/.cxx -maxdepth 5 -type d -print 2>/dev/null | head -200 || true
+            echo "::error::Could not find libclient_android_armv7l.so for armeabi-v7a."
+            find client/android/app/build -type f -name '*.so' -print || true
             exit 1
           fi
+          echo "Found client library: $CLIENT_LIB"
           mkdir -p engine/android/app/src/main/jniLibs/armeabi-v7a
           cp "$CLIENT_LIB" engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
           file engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
@@ -73,7 +71,7 @@ jobs:
           </activity>"""
           updated, count = re.subn(pattern, replacement, content, count=1)
           if count != 1:
-              raise SystemExit("Could not find expected MainActivity launcher block in AndroidManifest.xml")
+              raise SystemExit("Could not find expected MainActivity launcher block")
           manifest.write_text(updated)
           launcher = Path("engine/android/app/src/main/java/su/xash/engine/TacticalLauncherActivity.java")
           launcher.parent.mkdir(parents=True, exist_ok=True)
