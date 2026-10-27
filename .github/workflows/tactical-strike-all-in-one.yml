@@ -14,46 +14,55 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        name: Checkout Tactical Strike
+      - name: Checkout Tactical Strike
+        uses: actions/checkout@v4
 
       - name: Checkout engine and client with submodules
         run: |
           git clone --depth 1 --recurse-submodules https://github.com/FWGS/xash3d-fwgs.git engine
           git clone --depth 1 --recurse-submodules https://github.com/FWGS/cs16-client.git client
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: gradle
 
-      - name: Build Counter-Strike client
+      - name: Build Counter-Strike client for 32-bit ARM
         working-directory: client/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleGitDebug
+          ./gradlew --no-daemon assembleGitDebug -Pandroid.injected.build.abi=armeabi-v7a
 
-      - name: Embed the 32-bit client library and configure launcher
+      - name: Locate and embed the 32-bit client library
         run: |
           set -euxo pipefail
-          CLIENT_LIB="$(find client/android/app/build -type f -path '*/armeabi-v7a/*' -name 'libclient.so' | head -n 1)"
-          test -n "$CLIENT_LIB"
+          echo "Searching for native client libraries..."
+          find client/android/app -type f \( -name 'libclient.so' -o -name 'client.so' \) -print
+          CLIENT_LIB="$(find client/android/app -type f -path '*/armeabi-v7a/*' -name 'libclient.so' -print -quit)"
+          if [ -z "$CLIENT_LIB" ]; then
+            echo "::error::No armeabi-v7a/libclient.so was produced. Native outputs:"
+            find client/android/app -type f -name '*.so' -print || true
+            echo "CMake build directories:"
+            find client/android/app/.cxx -maxdepth 5 -type d -print 2>/dev/null | head -200 || true
+            exit 1
+          fi
           mkdir -p engine/android/app/src/main/jniLibs/armeabi-v7a
           cp "$CLIENT_LIB" engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
           file engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
           python3 - <<'PY'
           from pathlib import Path
           import re
-          p = Path("engine/android/app/build.gradle.kts")
-          s = p.read_text()
+          gradle = Path("engine/android/app/build.gradle.kts")
+          content = gradle.read_text()
           old = 'experimentalProperties["ninja.abiFilters"] = setOf("armeabi-v7a", "arm64-v8a", "x86")'
-          if old not in s:
-              raise SystemExit("Could not locate engine ABI filter; stopping safely.")
-          p.write_text(s.replace(old, 'experimentalProperties["ninja.abiFilters"] = setOf("armeabi-v7a")', 1))
-
+          new = 'experimentalProperties["ninja.abiFilters"] = setOf("armeabi-v7a")'
+          if old not in content:
+              raise SystemExit("Could not locate engine ABI filter in build.gradle.kts")
+          gradle.write_text(content.replace(old, new, 1))
           manifest = Path("engine/android/app/src/main/AndroidManifest.xml")
-          s = manifest.read_text()
+          content = manifest.read_text()
           pattern = r'<activity\s+android:name="\.MainActivity"\s+android:exported="true">\s*<intent-filter>\s*<action android:name="android.intent.action.MAIN"\s*/>\s*<category android:name="android.intent.category.LAUNCHER"\s*/>\s*</intent-filter>\s*</activity>'
           replacement = """<activity android:name=".MainActivity" android:exported="true" />
           <activity android:name=".TacticalLauncherActivity" android:exported="true">
@@ -62,18 +71,16 @@ jobs:
               <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
           </activity>"""
-          s2, count = re.subn(pattern, replacement, s, count=1)
+          updated, count = re.subn(pattern, replacement, content, count=1)
           if count != 1:
-              raise SystemExit("Could not locate the engine launcher activity; stopping safely.")
-          manifest.write_text(s2)
-
+              raise SystemExit("Could not find expected MainActivity launcher block in AndroidManifest.xml")
+          manifest.write_text(updated)
           launcher = Path("engine/android/app/src/main/java/su/xash/engine/TacticalLauncherActivity.java")
+          launcher.parent.mkdir(parents=True, exist_ok=True)
           launcher.write_text("""package su.xash.engine;
-
           import android.app.Activity;
           import android.content.Intent;
           import android.os.Bundle;
-
           public final class TacticalLauncherActivity extends Activity {
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -90,22 +97,28 @@ jobs:
           """)
           PY
 
-      - name: Build standalone engine APK
+      - name: Build standalone Tactical Strike APK
         working-directory: engine/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleDebug
 
-      - name: Verify and stage APK
+      - name: Verify APK and stage artifact
         run: |
           set -euxo pipefail
-          APK="$(find engine/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          APK="$(find engine/android/app/build/outputs/apk -type f -name '*.apk' -print -quit)"
           test -n "$APK"
-          unzip -l "$APK" | grep 'lib/armeabi-v7a/'
-          unzip -l "$APK" | grep -E 'lib/armeabi-v7a/libclient[^/]*\.so$'
+          echo "APK: $APK"
+          unzip -l "$APK" | grep -E 'lib/armeabi-v7a/.*\.so$'
+          unzip -l "$APK" | grep -E 'lib/armeabi-v7a/libclient\.so$'
+          if unzip -l "$APK" | grep -q 'lib/arm64-v8a/'; then
+            echo "::error::APK unexpectedly contains arm64-v8a libraries"
+            exit 1
+          fi
           cp "$APK" Tactical-Strike-All-in-One-armeabi-v7a.apk
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
           name: Tactical-Strike-All-in-One-armeabi-v7a
           path: Tactical-Strike-All-in-One-armeabi-v7a.apk
