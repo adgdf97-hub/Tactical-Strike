@@ -1,0 +1,113 @@
+name: Build Tactical Strike All-in-One APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/tactical-strike-all-in-one.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout Tactical Strike
+
+      - name: Checkout engine and client with submodules
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/FWGS/xash3d-fwgs.git engine
+          git clone --depth 1 --recurse-submodules https://github.com/FWGS/cs16-client.git client
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build Counter-Strike client
+        working-directory: client/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleGitDebug
+
+      - name: Embed the 32-bit client library and configure launcher
+        run: |
+          set -euxo pipefail
+          CLIENT_LIB="$(find client/android/app/build -type f -path '*/armeabi-v7a/*' -name 'libclient.so' | head -n 1)"
+          test -n "$CLIENT_LIB"
+          mkdir -p engine/android/app/src/main/jniLibs/armeabi-v7a
+          cp "$CLIENT_LIB" engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
+          file engine/android/app/src/main/jniLibs/armeabi-v7a/libclient.so
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("engine/android/app/build.gradle.kts")
+          s = p.read_text()
+          old = 'experimentalProperties["ninja.abiFilters"] = setOf("armeabi-v7a", "arm64-v8a", "x86")'
+          if old not in s:
+              raise SystemExit("Could not locate engine ABI filter; stopping safely.")
+          p.write_text(s.replace(old, 'experimentalProperties["ninja.abiFilters"] = setOf("armeabi-v7a")', 1))
+
+          manifest = Path("engine/android/app/src/main/AndroidManifest.xml")
+          s = manifest.read_text()
+          pattern = r'<activity\s+android:name="\.MainActivity"\s+android:exported="true">\s*<intent-filter>\s*<action android:name="android.intent.action.MAIN"\s*/>\s*<category android:name="android.intent.category.LAUNCHER"\s*/>\s*</intent-filter>\s*</activity>'
+          replacement = """<activity android:name=".MainActivity" android:exported="true" />
+          <activity android:name=".TacticalLauncherActivity" android:exported="true">
+            <intent-filter>
+              <action android:name="android.intent.action.MAIN" />
+              <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+          </activity>"""
+          s2, count = re.subn(pattern, replacement, s, count=1)
+          if count != 1:
+              raise SystemExit("Could not locate the engine launcher activity; stopping safely.")
+          manifest.write_text(s2)
+
+          launcher = Path("engine/android/app/src/main/java/su/xash/engine/TacticalLauncherActivity.java")
+          launcher.write_text("""package su.xash.engine;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+
+          public final class TacticalLauncherActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  Intent intent = new Intent(this, XashActivity.class);
+                  intent.putExtra("gamedir", "cstrike");
+                  intent.putExtra("gamelibdir", getApplicationInfo().nativeLibraryDir);
+                  intent.putExtra("argv", "-dev 2 -log");
+                  intent.putExtra("package", getPackageName());
+                  startActivity(intent);
+                  finish();
+              }
+          }
+          """)
+          PY
+
+      - name: Build standalone engine APK
+        working-directory: engine/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Verify and stage APK
+        run: |
+          set -euxo pipefail
+          APK="$(find engine/android/app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          unzip -l "$APK" | grep 'lib/armeabi-v7a/'
+          unzip -l "$APK" | grep -E 'lib/armeabi-v7a/libclient[^/]*\.so$'
+          cp "$APK" Tactical-Strike-All-in-One-armeabi-v7a.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tactical-Strike-All-in-One-armeabi-v7a
+          path: Tactical-Strike-All-in-One-armeabi-v7a.apk
+          if-no-files-found: error
+          
