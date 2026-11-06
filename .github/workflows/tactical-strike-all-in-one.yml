@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "inputs/**"
+      - "branding/**"
       - "launcher/**"
       - "scripts/**"
       - ".github/workflows/tactical-strike-all-in-one.yml"
@@ -67,6 +68,11 @@ jobs:
           python3 scripts/merge_project.py --engine work/engine --cs-raw work/cs_raw \
             --package "$APP_PACKAGE" --label "$APP_LABEL"
           cp work/merge_report.json build-report/
+
+      - name: Apply Tactical Strike icon
+        run: |
+          python3 -m pip install Pillow
+          python3 scripts/apply_icon.py --engine work/engine --icon branding/icon.png
 
       - name: Compile launcher to dex
         run: |
